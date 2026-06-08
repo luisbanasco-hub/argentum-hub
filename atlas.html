@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0d1117">
+<title>ATLAS · Argentum Hub</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<a class="back-link" href="index.html">← Hub</a>
+
+<header class="hub-header">
+  <h1>ATLAS v2.0 <span class="badge badge-live"><span class="dot"></span>LIVE</span></h1>
+  <div class="meta">
+    Next briefing: <span id="countdown">—</span> (10:00 UTC)
+    <span id="globalflag"></span>
+  </div>
+</header>
+
+<!-- ROW 1: Cards -->
+<div class="grid grid-4">
+  <div class="card"><div class="card-label">Sentiment Score</div><div class="card-value" id="kpi-sent">—</div><div class="card-sub" id="kpi-sent-sub"></div></div>
+  <div class="card"><div class="card-label">Fear &amp; Greed</div><div class="card-value gold" id="kpi-fng">72</div><div class="card-sub">Greed</div></div>
+  <div class="card"><div class="card-label">BTC Dominance</div><div class="card-value blue" id="kpi-dom">54.2%</div><div class="card-sub">est.</div></div>
+  <div class="card"><div class="card-label">Active Sources</div><div class="card-value" id="kpi-src">—</div><div class="card-sub" id="kpi-src-sub"></div></div>
+</div>
+
+<!-- ROW 2: Market prices -->
+<div class="section-title">Market Prices <span id="prices-flag"></span></div>
+<div class="grid grid-4" id="prices-crypto"></div>
+<div class="grid grid-3" id="prices-tradfi" style="margin-top:12px"></div>
+
+<!-- ROW 3: Signals timeline -->
+<div class="section-title">Macro Signals — last 7 days <span id="signals-flag"></span></div>
+<div class="filters" id="filters">
+  <button class="filter-btn active" data-f="ALL">ALL</button>
+  <button class="filter-btn" data-f="ATLAS">ATLAS</button>
+  <button class="filter-btn" data-f="MIDAS">MIDAS</button>
+  <button class="filter-btn" data-f="ONCHAIN">ONCHAIN</button>
+</div>
+<div class="feed" id="signals"><div class="card skeleton sk-line"></div></div>
+
+<!-- ROW 4: News source health -->
+<div class="section-title">News Source Health <span id="health-flag"></span></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Source</th><th>Status</th><th>Last Fetched</th><th>Note</th></tr></thead>
+    <tbody id="health-body"><tr><td colspan="4" class="empty-state">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- ROW 5: Upcoming events -->
+<div class="section-title">Upcoming Macro Events</div>
+<div class="card">
+  <div class="row-flex"><span>📅 Next: <strong>FOMC Rate Decision</strong></span><span class="spacer"></span><span class="gold" id="fed-when">in ~12 days</span></div>
+  <div class="card-sub" style="margin-top:8px">Full calendar via <code>/calendar</code> in Telegram · Forex Factory feed not yet in DB</div>
+</div>
+
+<footer class="hub-footer">ATLAS v2.0 · Daily briefing 10:00 UTC · Sentiment + on-chain + macro intelligence</footer>
+
+<script src="assets/hub.js"></script>
+<script>
+let allSignals = [], activeFilter = 'ALL';
+
+function tickCountdown() {
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 10, 0, 0));
+  if (now.getTime() >= next.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+  const ms = next - now;
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  setHTML('countdown', `${h}h ${m}m`);
+}
+
+async function loadPrices() {
+  const CRYPTO = [{id:'bitcoin',l:'BTC'},{id:'ethereum',l:'ETH'},{id:'solana',l:'SOL'},{id:'ripple',l:'XRP'}];
+  const r = await fetchPrices(CRYPTO.map(a=>a.id));
+  const data = r.ok ? r.data : MOCK.prices;
+  setFlag('prices-flag', r.ok ? 'live' : 'mock');
+  el('prices-crypto').innerHTML = CRYPTO.map(a => {
+    const d = data[a.id] || {usd:0,usd_24h_change:0}; const c = d.usd_24h_change||0;
+    return `<div class="card price-card"><div class="card-label">${a.l}</div>
+      <div class="price">${formatUSD(d.usd, d.usd<10?4:2)}</div>
+      <div class="chg ${pnlClass(c)}">${formatPct(c)} ${c>=0?'▲':'▼'}</div></div>`;
+  }).join('');
+  // TradFi — static placeholders (no free no-auth equity feed)
+  const TRADFI = [{l:'SPY',p:548.20,c:0.42},{l:'QQQ',p:472.85,c:0.61},{l:'GLD',p:215.40,c:-0.18}];
+  el('prices-tradfi').innerHTML = TRADFI.map(a =>
+    `<div class="card price-card"><div class="card-label">${a.l} <span class="data-flag mock">static</span></div>
+      <div class="price">${formatUSD(a.p)}</div>
+      <div class="chg ${pnlClass(a.c)}">${formatPct(a.c)} ${a.c>=0?'▲':'▼'}</div></div>`
+  ).join('');
+}
+
+async function loadSignals() {
+  const since = new Date(Date.now() - 7*86400000).toISOString();
+  const r = await loadData(SUPABASE_MIDAS, 'macro_signals',
+    `updated_at=gte.${since}&order=updated_at.desc&limit=100`, MOCK.macro_signals);
+  setFlag('signals-flag', r.source);
+  allSignals = r.rows;
+  // KPIs
+  const bull = r.rows.filter(x=>x.bias==='bullish').length, bear = r.rows.filter(x=>x.bias==='bearish').length;
+  const net = bull - bear;
+  const mood = net > 0 ? '🟢' : net < 0 ? '🔴' : '🟡';
+  setHTML('kpi-sent', `${mood} ${net>0?'+':''}${net}`);
+  setHTML('kpi-sent-sub', `${bull} bull / ${bear} bear`);
+  renderSignals();
+}
+
+function renderSignals() {
+  let rows = allSignals;
+  if (activeFilter !== 'ALL') {
+    rows = rows.filter(s => (s.source||'').toUpperCase().includes(activeFilter));
+  }
+  if (!rows.length) { setHTML('signals', `<div class="card empty-state">No signals match filter</div>`); return; }
+  el('signals').innerHTML = rows.map(s => {
+    const biasCls = s.bias==='bullish'?'pos':s.bias==='bearish'?'neg':'flat';
+    return `<div class="feed-item">${sourceBadge(s.source)}
+      <span class="headline"><strong>${s.symbol}</strong> · <span class="${biasCls}">${(s.bias||'').toUpperCase()}</span></span>
+      <span class="mono-sm">conf ${formatNum((s.confidence||0)*100,0)}%</span>
+      <span class="when">${timeAgo(s.updated_at)}</span></div>`;
+  }).join('');
+}
+
+document.getElementById('filters').addEventListener('click', e => {
+  if (!e.target.classList.contains('filter-btn')) return;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  activeFilter = e.target.dataset.f;
+  renderSignals();
+});
+
+async function loadHealth() {
+  // latest snapshot's source health
+  const snap = await loadData(SUPABASE_MIDAS, 'portfolio_snapshots', 'select=id&order=snapshot_at.desc&limit=1', null);
+  const snapId = snap.rows[0] && snap.rows[0].id;
+  const params = snapId ? `snapshot_id=eq.${snapId}&order=source.asc` : 'order=created_at.desc&limit=10';
+  const r = await loadData(SUPABASE_MIDAS, 'data_source_health', params, MOCK.data_source_health);
+  setFlag('health-flag', r.source);
+  const active = r.rows.filter(x => x.status === 'ok').length;
+  setHTML('kpi-src', `${active}/${r.rows.length}`);
+  setHTML('kpi-src-sub', 'sources healthy');
+  if (!r.rows.length) { setHTML('health-body', `<tr><td colspan="4" class="empty-state">No source data</td></tr>`); return; }
+  el('health-body').innerHTML = r.rows.map(h => `<tr>
+    <td><strong>${h.source}</strong></td>
+    <td>${statusBadge(h.status)}</td>
+    <td class="mono-sm">${timeAgo(h.fetched_at)}</td>
+    <td class="mono-sm">${h.error_message || '—'}</td>
+  </tr>`).join('');
+}
+
+function refreshAll() { tickCountdown(); loadPrices(); loadSignals(); loadHealth(); }
+tickCountdown(); setInterval(tickCountdown, 60000);
+autoRefresh(refreshAll, 60);
+</script>
+</body>
+</html>

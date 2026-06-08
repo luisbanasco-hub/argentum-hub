@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0d1117">
+<title>MIDAS · Argentum Hub</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+<a class="back-link" href="index.html">← Hub</a>
+
+<header class="hub-header">
+  <h1>MIDAS v0.3 <span class="badge badge-paper">🟡 PAPER MODE</span></h1>
+  <div class="meta">
+    Go-live: Jul 1 · <span id="updated">—</span>
+    <button class="btn" onclick="refreshAll()" style="margin-left:8px">⟳ Refresh</button>
+    <span id="globalflag"></span>
+  </div>
+</header>
+
+<!-- ROW 1: Summary -->
+<div class="grid grid-4">
+  <div class="card"><div class="card-label">Total Value</div><div class="card-value" id="kpi-total">—</div><div class="card-sub" id="kpi-total-sub"></div></div>
+  <div class="card"><div class="card-label">Best Performer</div><div class="card-value" id="kpi-best" style="font-size:18px">—</div><div class="card-sub" id="kpi-best-sub"></div></div>
+  <div class="card"><div class="card-label">Worst Performer</div><div class="card-value" id="kpi-worst" style="font-size:18px">—</div><div class="card-sub" id="kpi-worst-sub"></div></div>
+  <div class="card"><div class="card-label">Days to Go-Live</div><div class="card-value" id="kpi-days">—</div><div class="card-sub">Jul 1, 2026</div></div>
+</div>
+
+<!-- ROW 2: Allocation donut -->
+<div class="section-title">Portfolio Allocation <span id="alloc-flag"></span></div>
+<div class="grid grid-2">
+  <div class="card"><div class="chart-box"><canvas id="donut"></canvas></div></div>
+  <div class="card"><div class="card-label">Pillar vs Target</div><div id="pillar-legend" style="margin-top:10px;line-height:2.2">Loading…</div></div>
+</div>
+
+<!-- ROW 3: Asset positions -->
+<div class="section-title">Asset Positions <span id="assets-flag"></span></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Asset</th><th>Pillar</th><th>Value</th><th>% Port</th><th>vs Target</th><th>Deviation</th><th>Source</th></tr></thead>
+    <tbody id="assets-body"><tr><td colspan="7" class="empty-state">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- ROW 4: Performance history -->
+<div class="section-title">Performance History <span id="perf-flag"></span></div>
+<div class="card"><div class="chart-box"><canvas id="perfChart"></canvas></div></div>
+
+<!-- ROW 5: Execution log -->
+<div class="section-title">Execution Log (last 10) <span id="exec-flag"></span></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Status</th><th>PnL</th></tr></thead>
+    <tbody id="exec-body"><tr><td colspan="7" class="empty-state">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<footer class="hub-footer">MIDAS v0.3 · Paper trading · Go-live Jul 1, 2026</footer>
+
+<script src="assets/hub.js"></script>
+<script>
+let donutChart = null, perfChart = null;
+const CHART_GRID = '#21262d', CHART_TICK = '#8b949e';
+const PILLAR_COLOR = { crypto: '#00ff88', tech: '#58a6ff', real_assets: '#f0b429', cash: '#8b949e' };
+const PILLAR_LABEL = { crypto: 'Crypto', tech: 'Tech', real_assets: 'Real Assets', cash: 'Cash' };
+
+function renderSnapshot(snap) {
+  const s = snap.rows[0] || MOCK.portfolio_snapshot;
+  setFlag('alloc-flag', snap.source);
+  setHTML('kpi-total', formatUSD(s.total_usd, 0));
+  setHTML('kpi-total-sub', `data: ${s.data_quality || '—'} · ${timeAgo(s.snapshot_at)}`);
+  setHTML('kpi-days', Math.max(0, daysBetween(new Date().toISOString(), null) * -1 + daysBetween(new Date().toISOString(), PAPER.midasGoLive)));
+  // simpler: days until go-live
+  setHTML('kpi-days', Math.max(0, daysBetween(new Date().toISOString(), PAPER.midasGoLive)));
+
+  const allocs = s.pillar_allocs || {};
+  const order = ['crypto', 'tech', 'real_assets', 'cash'];
+  const present = order.filter(k => allocs[k]);
+  const labels = present.map(k => PILLAR_LABEL[k]);
+  const values = present.map(k => Number(allocs[k].actual_pct || 0));
+  const colors = present.map(k => PILLAR_COLOR[k]);
+
+  // legend with target lines
+  el('pillar-legend').innerHTML = present.map(k => {
+    const a = allocs[k];
+    const dev = Number(a.deviation_pp || 0);
+    const devCls = Math.abs(dev) > 10 ? 'gold' : pnlClass(dev);
+    return `<div class="row-flex">
+      <span class="dot dim" style="background:${PILLAR_COLOR[k]}"></span>
+      <span>${PILLAR_LABEL[k]}</span><span class="spacer"></span>
+      <span><strong>${formatNum(a.actual_pct,1)}%</strong> <span class="target-line">/ ${a.target_pct}%</span>
+      <span class="${devCls}"> (${formatPct(dev,1).replace('%','pp')})</span></span>
+    </div>`;
+  }).join('');
+
+  if (donutChart) donutChart.destroy();
+  donutChart = new Chart(el('donut'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: '#0d1117', borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '62%',
+      plugins: { legend: { position: 'bottom', labels: { color: CHART_TICK, font: { family: 'JetBrains Mono' }, padding: 12 } },
+        tooltip: { callbacks: { label: c => `${c.label}: ${c.parsed.toFixed(1)}%` } } }
+    }
+  });
+}
+
+function renderAssets(assets) {
+  setFlag('assets-flag', assets.source);
+  const rows = assets.rows.slice().sort((a,b) => Number(b.usd_value)-Number(a.usd_value)).slice(0, 25);
+  if (!rows.length) { setHTML('assets-body', `<tr><td colspan="7" class="empty-state">No positions</td></tr>`); return; }
+  // best/worst by pct_portfolio (proxy — no per-asset return stored)
+  const ranked = rows.filter(r => Number(r.usd_value) > 1);
+  if (ranked.length) {
+    const best = ranked[0], worst = ranked[ranked.length-1];
+    setHTML('kpi-best', best.symbol); setHTML('kpi-best-sub', `${formatNum(best.pct_portfolio,1)}% · ${formatUSD(best.usd_value,0)}`);
+    setHTML('kpi-worst', worst.symbol); setHTML('kpi-worst-sub', `${formatNum(worst.pct_portfolio,2)}% · ${formatUSD(worst.usd_value,0)}`);
+  }
+  el('assets-body').innerHTML = rows.map(r => {
+    const src = r.sources ? Object.keys(r.sources)[0] : '—';
+    return `<tr>
+      <td><strong>${r.symbol}</strong></td>
+      <td><span class="dot dim" style="background:${PILLAR_COLOR[r.pillar]||'#8b949e'}"></span> ${r.pillar}</td>
+      <td>${formatUSD(r.usd_value, 2)}</td>
+      <td>${formatNum(r.pct_portfolio, 2)}%</td>
+      <td class="flat">—</td>
+      <td class="flat">—</td>
+      <td class="mono-sm">${(src||'').replace(/_/g,' ')}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadPerf() {
+  const r = await loadData(SUPABASE_MIDAS, 'portfolio_snapshots',
+    'select=snapshot_at,total_usd&order=snapshot_at.asc&limit=500', MOCK.perf_series);
+  setFlag('perf-flag', r.source);
+  // downsample to ~60 points
+  let rows = r.rows.filter(x => x.total_usd != null);
+  if (rows.length > 60) { const step = Math.ceil(rows.length/60); rows = rows.filter((_,i)=>i%step===0); }
+  const labels = rows.map(x => new Date(x.snapshot_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}));
+  const data = rows.map(x => Number(x.total_usd));
+  const hwm = data.length ? Math.max(...data) : 0;
+  if (perfChart) perfChart.destroy();
+  perfChart = new Chart(el('perfChart'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Total Value', data, borderColor: '#f0b429', backgroundColor: 'rgba(240,180,41,.08)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2 },
+      { label: 'High Water Mark', data: data.map(()=>hwm), borderColor: '#00ff88', borderDash: [6,4], pointRadius: 0, borderWidth: 1, fill: false }
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: CHART_TICK, font:{family:'JetBrains Mono'} } } },
+      scales: {
+        x: { grid: { color: CHART_GRID }, ticks: { color: CHART_TICK, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { grid: { color: CHART_GRID }, ticks: { color: CHART_TICK, callback: v => '$'+(v/1000).toFixed(0)+'k' } }
+      }
+    }
+  });
+}
+
+async function loadExec() {
+  const r = await loadData(SUPABASE_MIDAS, 'trade_executions', 'order=created_at.desc&limit=10', MOCK.trade_executions);
+  setFlag('exec-flag', r.source);
+  if (!r.rows.length) { setHTML('exec-body', `<tr><td colspan="7" class="empty-state">No executions yet</td></tr>`); return; }
+  el('exec-body').innerHTML = r.rows.map(e => {
+    const pnl = e.pnl != null ? `<span class="${pnlClass(e.pnl)}">${formatUSD(e.pnl)}</span>` : '<span class="flat">—</span>';
+    return `<tr>
+      <td class="mono-sm">${timeAgo(e.created_at)}</td>
+      <td>${e.exchange||'—'}</td>
+      <td><strong>${e.symbol||'—'}</strong></td>
+      <td class="${(e.action||'').toUpperCase()==='BUY'?'pos':'neg'}">${(e.action||'—').toUpperCase()}</td>
+      <td>${e.usd_amount!=null?formatUSD(e.usd_amount,0):'—'}</td>
+      <td>${statusBadge(e.status)}</td>
+      <td>${pnl}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshAll() {
+  setHTML('updated', nowStamp());
+  const snap = await loadData(SUPABASE_MIDAS, 'portfolio_snapshots', 'order=snapshot_at.desc&limit=1', [MOCK.portfolio_snapshot]);
+  setFlag('globalflag', snap.source);
+  renderSnapshot(snap);
+  const snapId = snap.rows[0] && snap.rows[0].id;
+  const assetParams = snapId ? `snapshot_id=eq.${snapId}&order=usd_value.desc` : 'order=usd_value.desc&limit=25';
+  const assets = await loadData(SUPABASE_MIDAS, 'asset_positions', assetParams, MOCK.asset_positions);
+  renderAssets(assets);
+  loadPerf(); loadExec();
+}
+autoRefresh(refreshAll, 60);
+</script>
+</body>
+</html>
