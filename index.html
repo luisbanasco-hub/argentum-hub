@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0d1117">
+<title>⚔️ Argentum Hub</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="hub-header">
+  <h1>⚔️ ARGENTUM HUB</h1>
+  <div class="meta">
+    <span id="clock">—</span><br>
+    <span>auto-refresh 60s · <span id="globalflag"></span></span>
+  </div>
+</header>
+
+<!-- AGENT STATUS ROW -->
+<div class="section-title">Agents</div>
+<div class="grid grid-3" id="agents">
+  <a class="card clickable" href="max.html">
+    <div class="row-flex"><strong>MAX v2</strong><span class="spacer"></span><span id="max-badge">—</span></div>
+    <div class="card-sub" id="max-heartbeat">Updated —</div>
+    <div class="card-value" style="font-size:15px;margin-top:8px" id="max-metric">Loading…</div>
+  </a>
+  <a class="card clickable" href="midas.html">
+    <div class="row-flex"><strong>MIDAS</strong><span class="spacer"></span><span id="midas-badge">—</span></div>
+    <div class="card-sub" id="midas-heartbeat">Updated —</div>
+    <div class="card-value" style="font-size:15px;margin-top:8px" id="midas-metric">Loading…</div>
+  </a>
+  <a class="card clickable" href="atlas.html">
+    <div class="row-flex"><strong>ATLAS</strong><span class="spacer"></span><span class="badge badge-live"><span class="dot"></span>LIVE</span></div>
+    <div class="card-sub" id="atlas-heartbeat">Briefing 10:00 UTC daily</div>
+    <div class="card-value" style="font-size:15px;margin-top:8px" id="atlas-metric">Loading…</div>
+  </a>
+</div>
+
+<!-- MARKET PULSE -->
+<div class="section-title">Market Pulse <span id="prices-flag"></span></div>
+<div class="grid grid-4" id="prices">
+  <div class="card price-card"><div class="card-label">BTC</div><div class="price skeleton sk-value">·····</div></div>
+  <div class="card price-card"><div class="card-label">ETH</div><div class="price skeleton sk-value">·····</div></div>
+  <div class="card price-card"><div class="card-label">SOL</div><div class="price skeleton sk-value">·····</div></div>
+  <div class="card price-card"><div class="card-label">XRP</div><div class="price skeleton sk-value">·····</div></div>
+</div>
+
+<!-- MACRO SIGNALS -->
+<div class="section-title">Macro Signals <span id="signals-flag"></span></div>
+<div class="feed" id="signals"><div class="card skeleton sk-line"></div></div>
+
+<!-- ALERTS -->
+<div class="section-title">Latest Alerts <span id="alerts-flag"></span></div>
+<div class="feed" id="alerts"><div class="card skeleton sk-line"></div></div>
+
+<footer class="hub-footer" id="footer">
+  MAX v2.0.0-rc1 · MIDAS v0.3 · ATLAS v2.0<br>
+  Paper trading: Day <span id="f-day">—</span>/14 · MAX go-live: Jun 20 · MIDAS go-live: Jul 1
+</footer>
+
+<script src="assets/hub.js"></script>
+<script>
+tickClock('clock');
+
+async function loadAgents() {
+  // MAX
+  const dt = await loadData(SUPABASE_MAX, 'directional_trades', 'order=opened_at.desc', MOCK.directional_trades);
+  const rs = await loadData(SUPABASE_MAX, 'risk_state_v2', 'limit=1', MOCK.risk_state);
+  const closed = dt.rows.filter(t => t.status === 'closed');
+  setHTML('max-badge', `<span class="badge badge-paper">PAPER</span>`);
+  setHTML('max-heartbeat', `Updated ${timeAgo(rs.rows[0] && rs.rows[0].updated_at)}`);
+  setHTML('max-metric', `Paper Day ${paperDay()}/14 · ${closed.length} closed trades`);
+
+  // MIDAS
+  const snap = await loadData(SUPABASE_MIDAS, 'portfolio_snapshots', 'order=snapshot_at.desc&limit=1', [MOCK.portfolio_snapshot]);
+  const s = snap.rows[0] || MOCK.portfolio_snapshot;
+  const crypto = s.pillar_allocs && s.pillar_allocs.crypto ? s.pillar_allocs.crypto : { actual_pct: 0, deviation_pp: 0 };
+  setHTML('midas-badge', `<span class="badge badge-paper">PAPER</span>`);
+  setHTML('midas-heartbeat', `Updated ${timeAgo(s.snapshot_at)}`);
+  setHTML('midas-metric', `${formatUSD(s.total_usd, 0)} · Crypto ${formatNum(crypto.actual_pct,0)}% (${pctSpan(crypto.deviation_pp,0).replace('%','pp')})`);
+
+  // ATLAS (derive sentiment from latest macro signals)
+  const sig = await loadData(SUPABASE_MIDAS, 'macro_signals', 'order=updated_at.desc&limit=10', MOCK.macro_signals);
+  const bull = sig.rows.filter(x => x.bias === 'bullish').length;
+  const bear = sig.rows.filter(x => x.bias === 'bearish').length;
+  const mood = bull > bear ? '🟢 BULLISH' : bear > bull ? '🔴 BEARISH' : '🟡 NEUTRAL';
+  setHTML('atlas-metric', `Sentiment: ${mood} · F&G: 72`);
+
+  setHTML('f-day', paperDay());
+  setFlag('globalflag', (dt.source === 'live' || snap.source === 'live') ? 'live' : 'mock');
+}
+
+async function loadPrices() {
+  const ASSETS = [
+    { id: 'bitcoin', label: 'BTC' }, { id: 'ethereum', label: 'ETH' },
+    { id: 'solana', label: 'SOL' }, { id: 'ripple', label: 'XRP' }
+  ];
+  const r = await fetchPrices(ASSETS.map(a => a.id));
+  const data = r.ok ? r.data : MOCK.prices;
+  setFlag('prices-flag', r.ok ? 'live' : 'mock');
+  el('prices').innerHTML = ASSETS.map(a => {
+    const d = data[a.id] || { usd: 0, usd_24h_change: 0 };
+    const chg = d.usd_24h_change || 0;
+    const arrow = chg >= 0 ? '▲' : '▼';
+    return `<div class="card price-card">
+      <div class="card-label">${a.label}</div>
+      <div class="price">${formatUSD(d.usd, d.usd < 10 ? 4 : 2)}</div>
+      <div class="chg ${pnlClass(chg)}">${formatPct(chg)} ${arrow}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadSignals() {
+  const r = await loadData(SUPABASE_MIDAS, 'macro_signals', 'order=updated_at.desc&limit=5', MOCK.macro_signals);
+  setFlag('signals-flag', r.source);
+  if (!r.rows.length) { setHTML('signals', `<div class="card empty-state">No macro signals</div>`); return; }
+  el('signals').innerHTML = r.rows.map(s => {
+    const biasCls = s.bias === 'bullish' ? 'pos' : s.bias === 'bearish' ? 'neg' : 'flat';
+    return `<div class="feed-item">
+      ${sourceBadge(s.source)}
+      <span class="headline"><strong>${s.symbol}</strong> · <span class="${biasCls}">${(s.bias||'').toUpperCase()}</span></span>
+      <span class="mono-sm">conf ${formatNum((s.confidence||0)*100, 0)}%</span>
+      <span class="when">${timeAgo(s.updated_at)}</span>
+    </div>`;
+  }).join('');
+}
+
+async function loadAlerts() {
+  const since = new Date(Date.now() - 86400000).toISOString();
+  const r = await loadData(SUPABASE_MAX, 'error_log',
+    `level=in.(WARNING,ERROR)&occurred_at=gte.${since}&order=occurred_at.desc&limit=3`, MOCK.error_log);
+  setFlag('alerts-flag', r.source);
+  if (!r.rows.length) { setHTML('alerts', `<div class="card empty-state">No alerts in last 24h ✅</div>`); return; }
+  el('alerts').innerHTML = r.rows.map(a => {
+    const lvl = (a.level || '').toLowerCase();
+    const icon = lvl === 'error' ? '🔴' : '⚠️';
+    return `<div class="feed-item lvl-${lvl}">
+      <span>${icon}</span>
+      <span class="headline"><strong>${a.logger_name || 'system'}</strong> · ${a.message || ''}</span>
+      <span class="when">${timeAgo(a.occurred_at)}</span>
+    </div>`;
+  }).join('');
+}
+
+function refreshAll() { loadAgents(); loadPrices(); loadSignals(); loadAlerts(); }
+autoRefresh(refreshAll, 60);
+</script>
+</body>
+</html>
