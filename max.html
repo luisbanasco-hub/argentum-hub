@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0d1117">
+<title>MAX v2 · Argentum Hub</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+<a class="back-link" href="index.html">← Hub</a>
+
+<header class="hub-header">
+  <h1>MAX v2 <span class="badge badge-paper">🟡 PAPER MODE</span></h1>
+  <div class="meta">
+    Day <span id="paper-day">—</span>/14 · <span id="updated">—</span>
+    <button class="btn" onclick="refreshAll()" style="margin-left:8px">⟳ Refresh</button>
+    <span id="globalflag"></span>
+  </div>
+</header>
+
+<!-- ROW 1: Summary cards -->
+<div class="grid grid-4">
+  <div class="card"><div class="card-label">Total P&L</div><div class="card-value" id="kpi-pnl">—</div><div class="card-sub" id="kpi-pnl-sub"></div></div>
+  <div class="card"><div class="card-label">Open Positions</div><div class="card-value" id="kpi-open">—</div><div class="card-sub" id="kpi-open-sub"></div></div>
+  <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="kpi-win">—</div><div class="card-sub" id="kpi-win-sub"></div></div>
+  <div class="card"><div class="card-label">Funding Collected</div><div class="card-value" id="kpi-funding">—</div><div class="card-sub" id="kpi-funding-sub"></div></div>
+</div>
+
+<!-- ROW 2: Open positions -->
+<div class="section-title">Open Positions <span id="open-flag"></span></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Mark</th><th>Unreal. PnL</th><th>Size</th><th>Score</th><th>Age</th><th>SL</th><th>TP</th></tr></thead>
+    <tbody id="open-body"><tr><td colspan="10" class="empty-state">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- ROW 3: Funding + Risk -->
+<div class="grid grid-2" style="margin-top:16px">
+  <div class="card">
+    <div class="card-label">Funding Rates (8h) <span id="funding-flag"></span></div>
+    <div class="table-wrap" style="border:none;margin-top:8px">
+      <table>
+        <thead><tr><th>Sym</th><th>Bybit</th><th>Binance</th><th>Best APY</th></tr></thead>
+        <tbody id="funding-body"><tr><td colspan="4" class="empty-state">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-label">Risk State <span id="risk-flag"></span></div>
+    <div id="risk-body" style="margin-top:10px;line-height:2.1">Loading…</div>
+  </div>
+</div>
+
+<!-- ROW 4: Closed trades -->
+<div class="section-title">Closed Trades (last 20) <span id="closed-flag"></span></div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Symbol</th><th>Side</th><th>Entry→Exit</th><th>PnL</th><th>Result</th><th>Score</th><th>Size</th><th>Duration</th><th>Closed</th></tr></thead>
+    <tbody id="closed-body"><tr><td colspan="9" class="empty-state">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- ROW 5: Equity curve -->
+<div class="section-title">Equity Curve (cumulative PnL)</div>
+<div class="card"><div class="chart-box"><canvas id="equityChart"></canvas></div></div>
+
+<!-- ROW 6: Macro signals -->
+<div class="section-title">Macro Signals (last 10) <span id="signals-flag"></span></div>
+<div class="feed" id="signals"><div class="card skeleton sk-line"></div></div>
+
+<footer class="hub-footer">MAX v2.0.0-rc1 · Paper trading Day <span id="f-day">—</span>/14 · Go-live Jun 20</footer>
+
+<script src="assets/hub.js"></script>
+<script>
+let equityChart = null;
+const CHART_GRID = '#21262d', CHART_TICK = '#8b949e';
+
+async function loadKPIs(dt, hedge) {
+  const closed = dt.rows.filter(t => t.status === 'closed');
+  const open = dt.rows.filter(t => t.status === 'open');
+  const totalPnl = closed.reduce((a, t) => a + Number(t.realized_pnl || 0), 0);
+  const wins = closed.filter(t => Number(t.realized_pnl) > 0).length;
+  const decided = closed.filter(t => Number(t.realized_pnl) !== 0).length;
+  const winRate = decided ? (wins / decided * 100) : 0;
+  const funding = hedge.rows.reduce((a, h) => a + Number(h.funding_collected || 0), 0);
+
+  setHTML('kpi-pnl', `<span class="${pnlClass(totalPnl)}">${formatUSD(totalPnl)}</span>`);
+  setHTML('kpi-pnl-sub', `${closed.length} closed`);
+  setHTML('kpi-open', open.length);
+  setHTML('kpi-open-sub', `${hedge.rows.filter(h=>h.status==='open').length} hedge`);
+  setHTML('kpi-win', `${formatNum(winRate, 0)}%`);
+  setHTML('kpi-win-sub', `${wins}/${decided} resolved`);
+  setHTML('kpi-funding', `<span class="pos">${formatUSD(funding)}</span>`);
+  setHTML('kpi-funding-sub', `${hedge.rows.length} hedges`);
+}
+
+function renderOpen(dt) {
+  const open = dt.rows.filter(t => t.status === 'open');
+  if (!open.length) { setHTML('open-body', `<tr><td colspan="10" class="empty-state">No open positions</td></tr>`); return; }
+  el('open-body').innerHTML = open.map(t => {
+    // mark/unrealized not stored → show entry as mark, pnl unknown
+    return `<tr>
+      <td><strong>${baseSymbol(t.symbol)}</strong></td>
+      <td class="${t.side==='LONG'?'pos':'neg'}">${t.side}</td>
+      <td>${formatUSD(t.entry_price)}</td>
+      <td class="flat">${formatUSD(t.entry_price)}</td>
+      <td class="flat">—</td>
+      <td>${formatUSD(t.usdt_amount,0)}</td>
+      <td>${t.signal_score}</td>
+      <td>${timeAgo(t.opened_at)}</td>
+      <td class="neg">${formatUSD(t.stop_loss)}</td>
+      <td class="pos">${formatUSD(t.take_profit)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderClosed(dt) {
+  const closed = dt.rows.filter(t => t.status === 'closed')
+    .sort((a,b) => new Date(b.closed_at) - new Date(a.closed_at)).slice(0, 20);
+  if (!closed.length) { setHTML('closed-body', `<tr><td colspan="9" class="empty-state">No closed trades</td></tr>`); return; }
+  el('closed-body').innerHTML = closed.map(t => {
+    const pnl = Number(t.realized_pnl || 0);
+    const win = pnl > 0;
+    const rowCls = pnl > 0 ? 'row-pos' : pnl < 0 ? 'row-neg' : '';
+    const dur = t.closed_at && t.opened_at ?
+      `${Math.max(1, Math.round((new Date(t.closed_at)-new Date(t.opened_at))/3600000))}h` : '—';
+    const exit = t.exit_price ? formatUSD(t.exit_price) : (t.take_profit ? formatUSD(t.take_profit) : '—');
+    return `<tr class="${rowCls}">
+      <td><strong>${baseSymbol(t.symbol)}</strong></td>
+      <td class="${t.side==='LONG'?'pos':'neg'}">${t.side}</td>
+      <td class="mono-sm">${formatUSD(t.entry_price)}→${exit}</td>
+      <td class="${pnlClass(pnl)}">${formatUSD(pnl)}</td>
+      <td>${pnl===0?'<span class="flat">FLAT</span>':win?'<span class="pos">WIN</span>':'<span class="neg">LOSS</span>'}</td>
+      <td>${t.signal_score}</td>
+      <td>${formatUSD(t.usdt_amount,0)}</td>
+      <td>${dur}</td>
+      <td class="mono-sm">${timeAgo(t.closed_at)}</td>
+    </tr>`;
+  }).join('');
+  drawEquity(closed.slice().reverse());
+}
+
+function drawEquity(closedAsc) {
+  let cum = 0;
+  const labels = [], data = [];
+  closedAsc.forEach(t => {
+    cum += Number(t.realized_pnl || 0);
+    labels.push(new Date(t.closed_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}));
+    data.push(Number(cum.toFixed(2)));
+  });
+  if (!labels.length) { labels.push('start'); data.push(0); }
+  if (equityChart) equityChart.destroy();
+  equityChart = new Chart(el('equityChart'), {
+    type: 'line',
+    data: { labels, datasets: [{
+      data, borderColor: '#00ff88', backgroundColor: 'rgba(0,255,136,.08)',
+      fill: true, tension: 0.25, pointRadius: 2, borderWidth: 2
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: CHART_GRID }, ticks: { color: CHART_TICK, maxRotation: 0, autoSkip: true } },
+        y: { grid: { color: CHART_GRID }, ticks: { color: CHART_TICK, callback: v => '$'+v } }
+      }
+    }
+  });
+}
+
+async function loadFunding() {
+  const r = await loadData(SUPABASE_MAX, 'funding_rate_history', 'order=recorded_at.desc&limit=50', null);
+  let rows;
+  if (r.rows && r.rows.length) {
+    // latest entry per symbol from real table (single-exchange) — synthesize display
+    const seen = {}; rows = [];
+    r.rows.forEach(x => { const b = baseSymbol(x.symbol); if (!seen[b]) { seen[b]=1;
+      rows.push({ symbol: b, bybit: Number(x.funding_rate), binance: Number(x.funding_rate) }); } });
+    setFlag('funding-flag', 'live');
+  } else { rows = MOCK.funding_rates; setFlag('funding-flag', 'mock'); }
+  el('funding-body').innerHTML = rows.map(f => {
+    const best = Math.max(f.bybit, f.binance);
+    const apy = (best * 3 * 365).toFixed(1); // 8h rate → daily(×3) → annual
+    const star = f.bybit >= f.binance ? '⭐' : '';
+    const star2 = f.binance > f.bybit ? '⭐' : '';
+    return `<tr>
+      <td><strong>${f.symbol}</strong></td>
+      <td>${formatPct(f.bybit,4)} ${star}</td>
+      <td>${formatPct(f.binance,4)} ${star2}</td>
+      <td class="pos">${apy}%</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRisk(rs) {
+  const r = rs.rows[0] || MOCK.risk_state[0];
+  setFlag('risk-flag', rs.source);
+  const cb = r.halted
+    ? `<span class="neg">Tripped ❌</span>`
+    : `<span class="pos">Active ✅</span>`;
+  const cap = 1000;
+  const exp = Number(r.daily_exposure || 0);
+  const expPct = Math.min(100, exp / cap * 100);
+  setHTML('risk-body', `
+    <div class="row-flex"><span class="flat">Circuit breaker</span><span class="spacer"></span>${cb}</div>
+    <div class="row-flex"><span class="flat">Daily exposure</span><span class="spacer"></span><strong>${formatUSD(exp,0)} / ${formatUSD(cap,0)}</strong></div>
+    <div style="background:#0d1117;border:1px solid var(--border);border-radius:4px;height:8px;overflow:hidden;margin:4px 0">
+      <div style="height:100%;width:${expPct}%;background:${expPct>90?'var(--red)':'var(--green)'}"></div></div>
+    <div class="row-flex"><span class="flat">Daily PnL</span><span class="spacer"></span><span class="${pnlClass(r.daily_pnl)}">${formatUSD(r.daily_pnl)}</span></div>
+    <div class="row-flex"><span class="flat">Consec. losses</span><span class="spacer"></span><strong>${r.consecutive_losses||0}</strong></div>
+    <div class="row-flex"><span class="flat">Paper day</span><span class="spacer"></span><strong>${paperDay()}/14</strong></div>
+  `);
+}
+
+async function loadSignals() {
+  const r = await loadData(SUPABASE_MIDAS, 'macro_signals', 'order=updated_at.desc&limit=10', MOCK.macro_signals);
+  setFlag('signals-flag', r.source);
+  if (!r.rows.length) { setHTML('signals', `<div class="card empty-state">No signals</div>`); return; }
+  el('signals').innerHTML = r.rows.map(s => {
+    const biasCls = s.bias === 'bullish' ? 'pos' : s.bias === 'bearish' ? 'neg' : 'flat';
+    return `<div class="feed-item">${sourceBadge(s.source)}
+      <span class="headline"><strong>${s.symbol}</strong> · <span class="${biasCls}">${(s.bias||'').toUpperCase()}</span></span>
+      <span class="mono-sm">conf ${formatNum((s.confidence||0)*100,0)}%</span>
+      <span class="when">${timeAgo(s.updated_at)}</span></div>`;
+  }).join('');
+}
+
+async function refreshAll() {
+  setHTML('paper-day', paperDay()); setHTML('f-day', paperDay());
+  setHTML('updated', nowStamp());
+  const dt = await loadData(SUPABASE_MAX, 'directional_trades', 'order=opened_at.desc&limit=200', MOCK.directional_trades.concat(MOCK.open_directional));
+  const hedge = await loadData(SUPABASE_MAX, 'hedge_positions', 'order=opened_at.desc', MOCK.hedge_positions);
+  const rs = await loadData(SUPABASE_MAX, 'risk_state_v2', 'limit=1', MOCK.risk_state);
+  setFlag('globalflag', dt.source);
+  setFlag('open-flag', dt.source); setFlag('closed-flag', dt.source);
+  loadKPIs(dt, hedge); renderOpen(dt); renderClosed(dt); renderRisk(rs);
+  loadFunding(); loadSignals();
+}
+autoRefresh(refreshAll, 60);
+</script>
+</body>
+</html>
