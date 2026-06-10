@@ -17,9 +17,16 @@
   <h1>⚔️ ARGENTUM HUB</h1>
   <div class="meta">
     <span id="clock">—</span><br>
-    <span>auto-refresh 60s · <span id="globalflag"></span></span>
+    <span>auto-refresh 60s · <span id="globalflag"></span></span><br>
+    <span class="mono-sm" id="countdown">—</span>
   </div>
 </header>
+
+<!-- SERVICE HEALTH (Phase FORTRESS v2 — service_heartbeats, both projects) -->
+<div class="section-title">Service Health <span id="health-flag"></span></div>
+<div class="grid grid-4" id="health">
+  <div class="card skeleton sk-line"></div>
+</div>
 
 <!-- AGENT STATUS ROW -->
 <div class="section-title">Agents</div>
@@ -48,6 +55,16 @@
   <div class="card price-card"><div class="card-label">ETH</div><div class="price skeleton sk-value">·····</div></div>
   <div class="card price-card"><div class="card-label">SOL</div><div class="price skeleton sk-value">·····</div></div>
   <div class="card price-card"><div class="card-label">XRP</div><div class="price skeleton sk-value">·····</div></div>
+</div>
+
+<!-- PAPER P&L (Phase FORTRESS v2) -->
+<div class="section-title">Paper P&amp;L — equity curve <span id="equity-flag"></span></div>
+<div class="card" id="equity"><div class="skeleton sk-line"></div></div>
+
+<!-- FUNDING SNAPSHOT (Phase FORTRESS v2) -->
+<div class="section-title">Funding Rates (8h) <span id="funding-flag"></span></div>
+<div class="grid grid-3" id="funding">
+  <div class="card skeleton sk-line"></div>
 </div>
 
 <!-- MACRO SIGNALS -->
@@ -115,8 +132,113 @@ async function loadPrices() {
   }).join('');
 }
 
+/* ── Phase FORTRESS v2 panels ─────────────────────────────────────── */
+
+const KEEPERS = [
+  { name: 'max-v2',       project: SUPABASE_MAX },
+  { name: 'midas-eu',     project: SUPABASE_MIDAS },
+  { name: 'atlas-eu',     project: SUPABASE_MIDAS },
+  { name: 'max-equities', project: SUPABASE_MIDAS }
+];
+
+async function loadHealth() {
+  const [maxHb, sharedHb] = await Promise.all([
+    fetchSupabase(SUPABASE_MAX, 'service_heartbeats', 'select=service_name,last_beat_at,status'),
+    fetchSupabase(SUPABASE_MIDAS, 'service_heartbeats', 'select=service_name,last_beat_at,status')
+  ]);
+  const rows = [...(maxHb.ok ? maxHb.data : []), ...(sharedHb.ok ? sharedHb.data : [])];
+  const byName = Object.fromEntries(rows.map(r => [r.service_name, r]));
+  const anyLive = maxHb.ok || sharedHb.ok;
+  setFlag('health-flag', anyLive ? 'live' : 'err');
+  el('health').innerHTML = KEEPERS.map(svc => {
+    const hb = byName[svc.name];
+    let icon = '🔴', sub = 'no heartbeat row';
+    if (hb && hb.last_beat_at) {
+      const ageMin = (Date.now() - new Date(hb.last_beat_at).getTime()) / 60000;
+      icon = ageMin <= 15 ? '✅' : '🔴';
+      sub = `beat ${timeAgo(hb.last_beat_at)} · ${hb.status || '?'}`;
+    } else if (!anyLive) {
+      icon = '⚪'; sub = 'stale — heartbeats table unreachable';
+    }
+    return `<div class="card">
+      <div class="row-flex"><strong>${svc.name}</strong><span class="spacer"></span><span>${icon}</span></div>
+      <div class="card-sub">${sub}</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadEquity() {
+  const since = new Date(Date.now() - 86400000).toISOString();
+  const [closedR, eqR] = await Promise.all([
+    fetchSupabase(SUPABASE_MAX, 'directional_trades',
+      'status=eq.closed&select=closed_at,realized_pnl&order=closed_at.asc&limit=500'),
+    fetchSupabase(SUPABASE_MIDAS, 'equity_trades',
+      'status=eq.closed&select=closed_at,pnl_usd&order=closed_at.asc&limit=500')
+  ]);
+  if (!closedR.ok && !eqR.ok) {
+    setFlag('equity-flag', 'err');
+    setHTML('equity', `<div class="empty-state">stale — P&L tables unreachable</div>`);
+    return;
+  }
+  setFlag('equity-flag', 'live');
+  const closed = closedR.ok ? closedR.data : [];
+  const eqTrades = eqR.ok ? eqR.data : [];
+  const pnlOf = t => Number(t.realized_pnl ?? t.pnl_usd ?? 0);
+  let cum = 0;
+  const curve = closed.map(t => (cum += pnlOf(t)));
+  const total = cum;
+  const day = arr => arr.filter(t => (t.closed_at || '') >= since)
+                        .reduce((s, t) => s + pnlOf(t), 0);
+  const eqTotal = eqTrades.reduce((s, t) => s + pnlOf(t), 0);
+  setHTML('equity', `
+    <div class="row-flex">
+      <span class="mono-sm">MAX cumulative: <strong class="${pnlClass(total)}">${formatUSD(total)}</strong>
+        · 24h: <span class="${pnlClass(day(closed))}">${formatUSD(day(closed))}</span></span>
+      <span class="spacer"></span>
+      <span class="mono-sm">Equities: <strong class="${pnlClass(eqTotal)}">${formatUSD(eqTotal)}</strong>
+        · 24h: <span class="${pnlClass(day(eqTrades))}">${formatUSD(day(eqTrades))}</span></span>
+    </div>
+    ${sparklineSVG(curve)}
+    <div class="card-sub">${closed.length} closed MAX paper trades · curve = cumulative realized P&amp;L</div>`);
+}
+
+async function loadFunding() {
+  const r = await fetchSupabase(SUPABASE_MAX, 'funding_rate_history',
+    'select=symbol,funding_rate,annual_rate,recorded_at&order=recorded_at.desc&limit=30');
+  if (!r.ok) {
+    setFlag('funding-flag', 'err');
+    setHTML('funding', `<div class="card empty-state">stale — funding history unreachable</div>`);
+    return;
+  }
+  setFlag('funding-flag', 'live');
+  const latest = {};
+  for (const row of r.data) if (!latest[row.symbol]) latest[row.symbol] = row;
+  const syms = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  el('funding').innerHTML = syms.map(s => {
+    const f = latest[s];
+    if (!f) return `<div class="card"><div class="card-label">${baseSymbol(s)}</div>
+      <div class="empty-state">no rows</div></div>`;
+    const rate = Number(f.funding_rate || 0);
+    return `<div class="card">
+      <div class="card-label">${baseSymbol(s)}</div>
+      <div class="price ${pnlClass(rate)}">${(rate * 100).toFixed(4)}%</div>
+      <div class="card-sub">≈ ${formatPct((f.annual_rate || 0) * 100, 1)} APR · ${timeAgo(f.recorded_at)}</div>
+    </div>`;
+  }).join('');
+}
+
+function updateCountdown() {
+  setHTML('countdown',
+    `🗓 gate review in ${daysTo('2026-06-17')}d · MAX eval in ${daysTo(PAPER.maxGoLive)}d · MIDAS live in ${daysTo(PAPER.midasGoLive)}d`);
+}
+
 async function loadSignals() {
-  const r = await loadData(SUPABASE_MIDAS, 'macro_signals', 'order=updated_at.desc&limit=5', MOCK.macro_signals);
+  // canonical home is the MAX project (ATLAS Phase-B writer); fall back to the
+  // shared project until the anon SELECT grant lands in MAX (Santiago item)
+  let r = await loadData(SUPABASE_MAX, 'macro_signals', 'order=updated_at.desc&limit=5');
+  if (!r.rows.length) {
+    r = await loadData(SUPABASE_MIDAS, 'macro_signals', 'order=updated_at.desc&limit=5', MOCK.macro_signals);
+  }
   setFlag('signals-flag', r.source);
   if (!r.rows.length) { setHTML('signals', `<div class="card empty-state">No macro signals</div>`); return; }
   el('signals').innerHTML = r.rows.map(s => {
@@ -132,8 +254,18 @@ async function loadSignals() {
 
 async function loadAlerts() {
   const since = new Date(Date.now() - 86400000).toISOString();
-  const r = await loadData(SUPABASE_MAX, 'error_log',
-    `level=in.(WARNING,ERROR)&occurred_at=gte.${since}&order=occurred_at.desc&limit=3`, MOCK.error_log);
+  // v2: merge error feeds from BOTH projects (MAX + shared)
+  const q = `level=in.(WARNING,ERROR)&occurred_at=gte.${since}&order=occurred_at.desc&limit=4`;
+  const [a1, a2] = await Promise.all([
+    fetchSupabase(SUPABASE_MAX, 'error_log', q),
+    fetchSupabase(SUPABASE_MIDAS, 'error_log', q)
+  ]);
+  const merged = [...(a1.ok ? a1.data : []), ...(a2.ok ? a2.data : [])]
+    .sort((x, y) => (y.occurred_at || '').localeCompare(x.occurred_at || ''))
+    .slice(0, 6);
+  const r = (a1.ok || a2.ok)
+    ? { rows: merged, source: 'live' }
+    : { rows: MOCK.error_log || [], source: 'mock' };
   setFlag('alerts-flag', r.source);
   if (!r.rows.length) { setHTML('alerts', `<div class="card empty-state">No alerts in last 24h ✅</div>`); return; }
   el('alerts').innerHTML = r.rows.map(a => {
@@ -147,7 +279,10 @@ async function loadAlerts() {
   }).join('');
 }
 
-function refreshAll() { loadAgents(); loadPrices(); loadSignals(); loadAlerts(); }
+function refreshAll() {
+  loadHealth(); loadAgents(); loadPrices(); loadEquity();
+  loadFunding(); loadSignals(); loadAlerts(); updateCountdown();
+}
 autoRefresh(refreshAll, 60);
 </script>
 </body>

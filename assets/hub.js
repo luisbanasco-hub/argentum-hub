@@ -295,3 +295,30 @@ const MOCK = {
     return out;
   })()
 };
+
+/* ===================================================================
+   PHASE FORTRESS v2 — sparkline + countdown helpers
+   =================================================================== */
+
+/* Inline SVG sparkline from an array of numbers. No dependencies. */
+function sparklineSVG(values, w = 560, h = 120, stroke = '#c9a227') {
+  if (!values || values.length < 2) {
+    return `<div class="empty-state">not enough data for a curve</div>`;
+  }
+  const min = Math.min(...values, 0), max = Math.max(...values, 0);
+  const span = (max - min) || 1;
+  const px = i => (i / (values.length - 1)) * (w - 8) + 4;
+  const py = v => h - 6 - ((v - min) / span) * (h - 12);
+  const pts = values.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(' ');
+  const zero = py(0);
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" role="img">
+    <line x1="4" y1="${zero}" x2="${w - 4}" y2="${zero}" stroke="#30363d" stroke-width="1"/>
+    <polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
+/* Days-to-date countdown chip text (clamps at 0). */
+function daysTo(dateISO) {
+  return Math.max(0, Math.ceil((new Date(dateISO + 'T00:00:00Z') - Date.now()) / 86400000));
+}
