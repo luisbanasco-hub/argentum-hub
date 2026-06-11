@@ -205,25 +205,49 @@ async function loadEquity() {
 }
 
 async function loadA2Line() {
-  // Phase GLADIUS: per-strategy split. Degrades until migration 005
-  // (strategy column) lands — the page never breaks on a 400.
-  const r = await fetchSupabase(SUPABASE_MAX, 'directional_trades',
-    'strategy=eq.a2_trend&select=status,realized_pnl,opened_at&order=opened_at.asc&limit=500');
-  if (!r.ok) {
-    setHTML('a2-line', '🗡 A2: per-strategy stats pending (migration 005)');
-    return;
+  // Phase AEGIS: full per-strategy split (migration 005 live) + A2 engine
+  // telemetry from the heartbeat meta. Any failed read degrades to a
+  // 'stale' label — the page never breaks.
+  const [trades, hb, hedges] = await Promise.all([
+    fetchSupabase(SUPABASE_MAX, 'directional_trades',
+      'select=status,realized_pnl,strategy&limit=1000'),
+    fetchSupabase(SUPABASE_MAX, 'service_heartbeats',
+      'select=meta&service_name=eq.max-v2'),
+    fetchSupabase(SUPABASE_MAX, 'hedge_positions',
+      'select=status,realized_pnl,funding_collected&limit=500')
+  ]);
+  const lines = [];
+  if (trades.ok) {
+    const per = {};
+    for (const t of trades.data) {
+      const k = t.strategy || 'legacy';
+      per[k] = per[k] || { net: 0, closed: 0, open: 0 };
+      if (t.status === 'closed') {
+        per[k].net += Number(t.realized_pnl || 0);
+        per[k].closed++;
+      } else per[k].open++;
+    }
+    const a2 = per.a2_trend || { net: 0, closed: 0, open: 0 };
+    const meta = (hb.ok && hb.data[0] && hb.data[0].meta) || {};
+    const evals = meta.a2_evals !== undefined ? ` · ${meta.a2_evals} evals` : '';
+    const flag = meta.a2_enabled === true ? '🟢' : (meta.a2_enabled === false ? '⚪ off' : '');
+    lines.push(`🗡 A2 ${flag}: <strong class="${pnlClass(a2.net)}">${formatUSD(a2.net)}</strong>` +
+      ` · ${a2.closed} closed · ${a2.open} open${evals}`);
+    const lg = per.legacy || { net: 0, closed: 0, open: 0 };
+    lines.push(`📜 legacy (retired): <span class="${pnlClass(lg.net)}">${formatUSD(lg.net)}</span>` +
+      ` · ${lg.closed} closed`);
+  } else {
+    lines.push('🗡 A2: stats unreadable this cycle');
   }
-  if (!r.data.length) {
-    setHTML('a2-line', '🗡 A2: no trades yet (engine ' +
-      'live-paper since activation — trend systems trade rarely)');
-    return;
+  if (hedges.ok) {
+    const closed = hedges.data.filter(h => h.status === 'closed');
+    const open = hedges.data.length - closed.length;
+    const net = closed.reduce((s, h) => s + Number(h.realized_pnl || 0), 0);
+    lines.push(`⚖️ funding book: <span class="${pnlClass(net)}">${formatUSD(net)}</span>` +
+      ` · ${closed.length} closed · ${open} open rows` +
+      (open > 3 ? ' <span class="neg">⚠ orphans (see AEGIS F7)</span>' : ''));
   }
-  const closed = r.data.filter(t => t.status === 'closed');
-  const open = r.data.length - closed.length;
-  const net = closed.reduce((s, t) => s + Number(t.realized_pnl || 0), 0);
-  setHTML('a2-line',
-    `🗡 A2: <strong class="${pnlClass(net)}">${formatUSD(net)}</strong> ` +
-    `· ${closed.length} closed · ${open} open`);
+  setHTML('a2-line', lines.join('<br>'));
 }
 
 async function loadFunding() {

@@ -33,3 +33,13 @@
 - FILES: index.html, BUILD_LOG.md
 - TESTS: manual live preview verification (panel + degradation path).
 - COMMIT: (this commit — "Phase GLADIUS: Hub A2 per-strategy line")
+
+## [2026-06-11 ~08:25 ET] — Phase AEGIS / Mission 3
+- WHAT: full per-strategy panel — A2 line (enabled flag + evals from live
+  heartbeat meta), legacy (retired) line, funding-book line with F7
+  orphan-row warning. VERIFIED live against production: A2 🟢 3 evals/0
+  trades, legacy $0.04/12 closed, funding $0.20/1 closed/7 open rows with
+  the orphan warning correctly firing.
+- FILES: index.html, BUILD_LOG.md
+- TESTS: live preview verification (real data, all three lines).
+- COMMIT: (this commit — "Phase AEGIS: Hub per-strategy panel + F7 warning")
