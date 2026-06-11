@@ -21,3 +21,15 @@
 - TESTS: node --check on hub.js; manual preview desktop + mobile; all four
   new panels verified live or gracefully degraded.
 - COMMIT: (this commit — "Phase FORTRESS: Hub live ops dashboard v2")
+
+## [2026-06-11 ~17:45 ET] — Phase GLADIUS / Mission 3.3
+- WHAT: A2 line in the Paper P&L panel — per-strategy split of
+  directional_trades (strategy=eq.a2_trend): net, closed count, open count.
+  Degrades to "pending (migration 005)" on 400 and to a friendly
+  "no trades yet" when the engine is fresh — the page never breaks.
+- VERIFIED: live preview — renders "per-strategy stats pending
+  (migration 005)" against the real DB (column not yet applied), exactly the
+  designed degradation.
+- FILES: index.html, BUILD_LOG.md
+- TESTS: manual live preview verification (panel + degradation path).
+- COMMIT: (this commit — "Phase GLADIUS: Hub A2 per-strategy line")
